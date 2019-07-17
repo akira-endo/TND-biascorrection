@@ -1,0 +1,522 @@
+---
+title: "Bias correction methods for test-negative design in the presence of misclassification"
+author: "Akira Endo, Sebastian Funk, Adam J. Kucharski"
+date: ""
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(foreach)
+library(fields)
+library(RColorBrewer)
+```
+
+
+## Simulation of the bias correction method for univariate analysis
+We investigate the accuracy of the univariate bias correction method given in the main text. Mean total sample size (\(\frac{1+\gamma\delta}{1+\delta}\lambda_V +\lambda_U\)) was set to be 3,000. A range of scenarios are employed (See Table 1 in the main text), and the true vaccine effectiveness \(\gamma\) was compared with the estimates from the simulated data. For each scenario, 500 sets of data were generated repeatedly.
+
+```{r sim-uni-preparation,tidy=TRUE}
+# parameter preparation
+mean_size<-3000 # mean sample size of TND
+n_sim<-500 # number of simulations
+
+parms1<-cbind(expand.grid(VE=c(0.4,0.8),LR=0.5,CR=0.5,sens=c(0.8,0.95,0.6)),spec=rep(c(0.95,0.97,0.9),each=2))
+parms2<-expand.grid(VE=c(0.4,0.8),LR=0.5,CR=c(0.7,0.3),sens=0.8,spec=0.95)
+parms3<-expand.grid(VE=c(0.4,0.8),LR=c(0.7,0.3),CR=0.5,sens=0.8,spec=0.95)
+parms<-rbind(parms1,parms2,parms3) # parameter combinations for simulation scnearios
+titles<-paste0(rep(c("Baseline",paste(c("High","Low"),rep(c("quality test","TD incidence", "vaccine coverage"),each=2))),each=2), c(": low VE",": high VE")) # Figure titles
+oddsratio<-function(data_table){prod(diag(data_table))/data_table[1,2]/data_table[2,1]} # returns odds ratio given a 2-by-2 table
+```
+
+```{r sim-uni,tidy=TRUE}
+# simulation
+sim_result1<-list(nrow(parms)) # store results
+for(id in 1:nrow(parms)){
+  parm<-unlist(parms[id,])
+  o_alpha<-(1-parm["sens"])/parm["sens"]
+  o_beta<-(1-parm["spec"])/parm["spec"]
+  true_inc<-c(parm["CR"],1-parm["CR"])%*%t(c(parm["LR"],1-parm["LR"]))
+  true_inc[1,1]=true_inc[1,1]*(1-parm["VE"])
+  true_inc=true_inc*mean_size/sum(true_inc) # ensure mean sample size = mean_size
+  test_mat<-matrix(c(parm["sens"],1-parm["sens"],1-parm["spec"],parm["spec"]),2,2)
+  
+  # corrected/raw estimates from simulated data
+  est<-cbind(est_corr=numeric(n_sim),est_raw=numeric(n_sim),est_true=numeric(n_sim))
+  for(i in 1:n_sim){
+    set.seed(id+i)
+    data_true<-matrix(rpois(4,true_inc),2,2) # simulated true data
+    ve_true<-1-oddsratio(data_true)
+    ## Misclassification
+    misdiag_PtoN<-rbinom(2,data_true[1,],1-parm["sens"])
+    misdiag_NtoP<-rbinom(2,data_true[2,],1-parm["spec"])
+    data_obs<-data_true
+    data_obs[1,]=data_obs[1,]-misdiag_PtoN+misdiag_NtoP
+    data_obs[2,]=data_obs[2,]-misdiag_NtoP+misdiag_PtoN
+    
+    data_correct<-matrix(c(1,-o_alpha,-o_beta,1),2,2)%*%data_obs # correction
+    data_correct<-matrix(pmax(0,data_correct),2,2) # truncate negative values
+    ve_est=1-c(oddsratio(data_correct),oddsratio(data_obs))
+    est[i,]=c(ve_est,ve_true)
+  }
+  sim_result1[[id]]=list(est=est[,1],raw=est[,2],true=est[,3],parm=parm)
+}
+```
+
+```{r sim-uni-mainresult, echo=FALSE,fig.width=18,fig.height=12}
+par(mfrow=c(2,2),cex=1.4,las=1,mar=c(5,10,2,1)+0.1)
+esttable<-NA
+for(id in 1:6){
+  res<-sim_result1[[id]]
+  trueCI<-quantile(res$true,c(0.025,0.975))
+  esttable<-cbind(esttable,res$raw,res$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+legend("topright",bty="n",pch=19,col=c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)),legend=c("raw","corrected "))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+  #boxplot(res$raw,breaks=seq(-1,2,by=0.01),add=T,col=rgb(1,0,0,1/4),ylim=xrange)
+  #hist(res$true,breaks=seq(-1,2,by=0.025),add=T,col=rgb(1,1,0,1/4),xlim=xrange,ylim=yrange)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+abline(v=0.8)
+
+esttable<-NA
+for(id in 7:14){
+  res<-sim_result1[[id]]
+  trueCI<-quantile(res$true,c(0.025,0.975))
+  esttable<-cbind(esttable,res$raw,res$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10,0,13,14)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12,0,15,16)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+abline(v=0.8)
+
+```
+
+## Simulation of the bias correction method for multivariate analysis
+### Parametric bootstrapping 
+We employ the same simulation framework as the univariate analysis. In addition to vaccination history \(\xi^1\), we consider one categorical and one continuous covariate. Let \(\xi_2\) be the age group (categorical; 1: child, 0: adult) and \(\xi_3\) be the antibody titer (continuous). Suppose that the ratio between children and adults is 1:2, and that \(\xi_3\) is rescaled so that it is standard normally distributed in the general population. For simplicity, we assume that all the covariates are mutually independent in the distribution and effects. The relative risk for child is set to be 2 and 1.5 for TD and ND, respectively, and a unit increase in the antibody titer is assumed to halve the risk of TD (that of ND is unchanged). With three covariates, the mean total sample size \(\lambda\) is increased to 3000 from the univariate analysis. Parametric bootstrapping approach (the number of iterations \(J=100\)) is employed to estimate VE. For each scenario, 500 sets of data were generated.
+
+```{r sim-mul-parms,tidy=TRUE}
+# parameter preparation
+mean_size<-3000 # mean sample size of TND
+n_sim<-500 # number of simulations
+n_iter<-100 # number of iterations for MI
+VE_upp<-1; VE_low<--0.5 # Upper and lower bounds of VE
+
+parms1<-cbind(expand.grid(VE=c(0.4,0.8),LR=0.5,CR=0.5,sens=c(0.8,0.95,0.6)),spec=rep(c(0.95,0.97,0.9),each=2))
+parms2<-expand.grid(VE=c(0.4,0.8),LR=0.5,CR=c(0.7,0.3),sens=0.8,spec=0.95)
+parms3<-expand.grid(VE=c(0.4,0.8),LR=c(0.7,0.3),CR=0.5,sens=0.8,spec=0.95)
+parms<-rbind(parms1,parms2,parms3) # parameter combinations for simulation scnearios
+
+RR_age<-c(2,1.5) #relative risk for age (TD, ND)
+pop_age<-c(1,2)
+RR_ab<-c(0.5,1) #relative risk for antibody titer (TD, ND)
+
+```
+
+```{r sim-mul-functions,tidy=TRUE}
+# Simulation & estimation function
+msimulator<-function(parm,seed){
+  set.seed(seed)
+  VE<-parm["VE"]
+  LR<-parm["LR"]
+  CR<-parm["CR"]
+  sens<-parm["sens"]
+  spec<-parm["spec"]
+  
+  lambda_vac<-(matrix(c((1-VE)*CR,1-CR,CR,1-CR),2,2)%*%c(LR,1-LR))
+  lambda_age<-(matrix(c(RR_age[1]*CR,RR_age[2]*(1-CR),CR,1-CR),2,2)%*%pop_age)
+  lambda_ab<-c(exp(log(RR_ab[1])^2/2)*CR,exp(log(RR_ab[2])^2/2)*(1-CR))
+  lambda_true<-lambda_vac*lambda_age*lambda_ab
+  lambda_true<-lambda_true/sum(lambda_true)*mean_size
+  
+  # Simulation
+  S_true<-rpois(2,lambda_true) # number of TD and ND cases
+  ## Covariate sampling
+  xi_vac_TD<-sample.int(2,S_true[1],replace=T,prob=rev(c(LR,1-LR)*c(1-VE,1)))-1
+  xi_vac_ND<-sample.int(2,S_true[2],replace=T,prob=rev(c(LR,1-LR)))-1
+  xi_age_TD<-sample.int(2,S_true[1],replace=T,prob=rev(pop_age*c(RR_age[1],1)))-1
+  xi_age_ND<-sample.int(2,S_true[2],replace=T,prob=rev(pop_age*c(RR_age[2],1)))-1
+  xi_ab_TD<-rnorm(S_true[1],log(RR_ab[1]),1)
+  xi_ab_ND<-rnorm(S_true[2],log(RR_ab[2]),1)
+  
+  xi_TD<-cbind(vac=xi_vac_TD,age=xi_age_TD,ab=xi_ab_TD)
+  xi_ND<-cbind(vac=xi_vac_ND,age=xi_age_ND,ab=xi_ab_ND)
+  
+  lreg_true<-glm(test~.,family=binomial(link="logit"),data=as.data.frame(rbind(cbind(test=1,xi_TD),cbind(test=0,xi_ND))))
+  
+  ## Misclassification
+  sample_pos<-rbinom(2,S_true,c(sens,1-spec)) # number of positives who are with TD / ND
+  D_pos<-rbind(head(xi_TD,sample_pos[1]),head(xi_ND,sample_pos[2]))
+  D_pos<-cbind(test=1,D_pos)
+  D_neg<-rbind(tail(xi_TD,S_true[1]-sample_pos[1]),tail(xi_ND,S_true[2]-sample_pos[2]))
+  D_neg<-cbind(test=0,D_neg)
+  
+  return(list(D_pos=D_pos,D_neg=D_neg,lreg_true=lreg_true))
+}
+
+# Estimation: parametric bootstrapping
+est_pb<-function(d_pos,d_neg,n_pos=nrow(d_pos),n_neg=nrow(d_neg),phat=NULL,n_iter,parm,seed){
+  set.seed(seed)
+  sens<-parm["sens"]
+  spec<-parm["spec"]
+  ## Prob of flipping the result
+  pflip_pos<-(sens*(1-phat[["pos"]])/phat[["pos"]]-(1-sens)) * ((1-spec)/(sens+spec-1))
+  pflip_pos<-pmin(1,pmax(0,pflip_pos))
+  pflip_neg<-(spec*phat[["neg"]]/(1-phat[["neg"]])-(1-spec)) * ((1-sens)/(sens+spec-1))
+  pflip_neg<-pmin(1,pmax(0,pflip_neg))
+  
+  ve_est<-numeric(n_iter)
+  for(iter in 1:n_iter){
+    ## Row IDs to be flipped 
+    idflip_pos<-runif(n_pos)<pflip_pos
+    idflip_neg<-runif(n_neg)<pflip_neg
+    ## Flip
+    copy_d_pos<-d_pos
+    copy_d_neg<-d_neg
+    copy_d_pos[idflip_pos,"test"]=0
+    copy_d_neg[idflip_neg,"test"]=1
+    data<-as.data.frame(rbind(copy_d_pos,copy_d_neg))
+    
+    # Logistic regression on flipped data
+    lreg<-glm(test~.,family=binomial(link="logit"),data=data)
+    ve_est[iter]<-1-exp(lreg[[1]][2]) # Corrected estimate
+  }
+  return(ve_est)
+}
+
+msim_est<-function(parm,seed,method="pb",ncovs=1){
+  ## simulate
+  if(ncovs==1) simdata<-msimulator(parm=parm,seed=seed)
+    else simdata<-manycov_simulator(parm=parm,seed=seed,ncovs)
+  D_pos<-simdata$D_pos
+  D_neg<-simdata$D_neg
+  ve_true<-1-exp(simdata$lreg_true[[1]][2])
+  
+  # Estimation from raw data
+  lreg_raw<-glm(test~.,family=binomial(link="logit"),data=as.data.frame(rbind(D_pos,D_neg)))
+  ve_raw<-1-exp(lreg_raw[[1]][2]) # raw VE estimate
+  #predicted probabilities for bootstrapping
+  phat_pos<-predict(lreg_raw,as.data.frame(D_pos),type="response")
+  phat_neg<-predict(lreg_raw,as.data.frame(D_neg),type="response")
+  
+  # Estimation
+  # Multiple imputation
+  n_pos<-nrow(D_pos)
+  n_neg<-nrow(D_neg)
+  
+  if(method=="pb"){ # parametric bootstrap
+    MI_est<-est_pb(D_pos,D_neg,n_pos,n_neg,phat=list(pos=phat_pos,neg=phat_neg),n_iter,parm,seed=seed)
+  }else if(method=="dl"){ # direct likelihood
+    MI_est<-est_dl(D_pos,D_neg,n_pos,n_neg,phat=list(pos=phat_pos,neg=phat_neg),n_iter,parm,seed=seed)  
+  }else if(method=="em"){ # EM algorithm
+    MI_est<-est_em(D_pos,D_neg,n_pos,n_neg,phat=list(pos=phat_pos,neg=phat_neg),n_iter,parm,seed=seed)
+  }else{ # without estimation
+    MI_est<-NA
+  }
+  ve_qest<-quantile(MI_est,c(0.5,0.025,0.975),na.rm=T)
+  ve_qest<-pmin(pmax(ve_qest,VE_low),VE_upp) # limit VE within bounds
+  return(c(ve_qest,ve_true=ve_true,ve_raw=ve_raw))  
+}
+```
+
+```{r sim-mul-implementation,tidy=TRUE}
+# simulation: parametric bootstrap
+sim_result2<-list(nrow(parms)) # store results
+for(id in 1:nrow(parms)){
+  parm<-unlist(parms[id,])
+
+  sims<-suppressWarnings(sapply(1:n_sim+id,msim_est,parm=parm,method="pb"))
+  sim_result2[[id]]=list(est=sims[1,],CI=sims[2:3,],true=sims[4,],raw=sims[5,],parm=parm)
+}
+```
+
+```{r sim-mul-mainresult, echo=FALSE,fig.width=18,fig.height=12}
+par(mfrow=c(2,2),cex=1.4,las=1,mar=c(5,10,2,1)+0.1)
+esttable<-NA
+for(id in 1:6){
+  res<-sim_result2[[id]]
+  trueCI<-quantile(res$true,c(0.025,0.975))
+  esttable<-cbind(esttable,res$raw,res$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+legend("topright",bty="n",pch=19,col=c(rgb(1,0,0,1/4),rgb(0,0,1,1/4)),legend=c("raw","corrected "))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+  #boxplot(res$raw,breaks=seq(-1,2,by=0.01),add=T,col=rgb(1,0,0,1/4),ylim=xrange)
+  #hist(res$true,breaks=seq(-1,2,by=0.025),add=T,col=rgb(1,1,0,1/4),xlim=xrange,ylim=yrange)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+abline(v=0.8)
+
+esttable<-NA
+for(id in 7:14){
+  res<-sim_result2[[id]]
+  trueCI<-quantile(res$true,c(0.025,0.975))
+  esttable<-cbind(esttable,res$raw,res$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10,0,13,14)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12,0,15,16)+1)],col=c(rgb(0,0,1,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+abline(v=0.8)
+
+```
+
+## Comparison of bias correction methods
+We compare three methods: the direct likelihood method, parametric bootstrapping and EM algorithm. Simulation settings are identical to those in the previous section. In the EM algorithm, the first 100 iterations out of total 200 are discarded as burn-in.
+
+```{r sim-mul-functions2,tidy=TRUE}
+est_em<-function(d_pos,d_neg,n_pos=nrow(d_pos),n_neg=nrow(d_neg),phat=NULL,n_iter,parm,seed=1){
+  set.seed(seed)
+  sens<-parm["sens"]
+  spec<-parm["spec"]
+  
+  # EM algorithm
+  ## initialise
+  ve_est<-numeric(n_iter)
+  phat_pos<-phat[["pos"]]
+  phat_neg<-phat[["neg"]]
+  
+  for(iter in 1:n_iter){
+    ## Prob of flipping the result
+    pflip_pos<-1-sens*phat_pos/(sens*phat_pos+(1-spec)*(1-phat_pos))
+    pflip_pos<-pmin(1,pmax(0,pflip_pos))
+    pflip_neg<-1-spec*(1-phat_neg)/((1-sens)*phat_neg+spec*(1-phat_neg))
+    pflip_neg<-pmin(1,pmax(0,pflip_neg))
+    
+    ## Row IDs to be flipped 
+    idflip_pos<-runif(n_pos)<pflip_pos
+    idflip_neg<-runif(n_neg)<pflip_neg
+    ## Flip
+    copy_d_pos<-d_pos
+    copy_d_neg<-d_neg
+    copy_d_pos[idflip_pos,"test"]=0
+    copy_d_neg[idflip_neg,"test"]=1
+    data<-as.data.frame(rbind(copy_d_pos,copy_d_neg))
+    
+    # Logistic regression on flipped data
+    lreg<-glm(test~.,family=binomial(link="logit"),data=data)
+    phat_pos<-predict(lreg,as.data.frame(copy_d_pos),type="response")
+    phat_neg<-predict(lreg,as.data.frame(copy_d_neg),type="response")
+    
+    ve_est[iter]<-1-exp(lreg[[1]][2]) # Corrected estimate
+  }
+  ve_est<-tail(ve_est,n_iter%/%2)
+  return(ve_est)
+}
+
+est_dl<-function(d_pos,d_neg,n_pos=nrow(d_pos),n_neg=nrow(d_neg),phat=NULL,n_iter,parm,seed){
+  set.seed(seed)
+  sens<-parm["sens"]
+  spec<-parm["spec"]
+  
+  # direct likelihood method
+  nlogl<-function(theta){
+    # covariates
+    cov_pos<-cbind(1,d_pos[,-1])
+    cov_neg<-cbind(1,d_neg[,-1])
+    # linear predictor
+    lp_pos<-cov_pos%*%theta
+    lp_neg<-cov_neg%*%theta
+    # likelihood computation
+    TD_pos<-plogis(lp_pos)
+    lik_pos<-sens*TD_pos+(1-spec)*(1-TD_pos)
+    ND_neg<-plogis(-lp_neg)
+    lik_neg<-spec*ND_neg+(1-sens)*(1-ND_neg)
+    return(-(sum(log(lik_pos))+sum(log(lik_neg))))
+  }
+  fit<-optim(par=numeric(ncol(d_pos))+0.1,fn=nlogl,method="L-BFGS")#,upper = 1-VE_low ,lower=1-VE_upp)
+  ve_est<-1-exp(fit$par[2])
+  return(ve_est)
+}
+```
+
+
+```{r sim-mul-comparison,tidy=TRUE}
+n_iter=200
+# simulation: parametric bootstrap
+sim_result3<-list(nrow(parms)) # store results
+for(id in 1:nrow(parms)){
+  parm<-unlist(parms[id,])
+  
+  sim_dl<-suppressWarnings(sapply(1:n_sim+id,msim_est,parm=parm,method=c("dl")))
+  sim_em<-suppressWarnings(sapply(1:n_sim+id,msim_est,parm=parm,method=c("em")))
+  
+  sim_result3[[id]]=lapply(list(sim_dl,sim_em),function(sim){
+    return(list(est=sim[1,],CI=sim[2:3,],true=sim[4,],raw=sim[5,],parm=parm))
+  })
+}
+```
+
+```{r sim-mul-comparison-result, tidy=TRUE, echo=FALSE,fig.width=18,fig.height=28}
+titles<-paste0(rep(c("Baseline",paste(c("High","Low"),rep(c("quality test","TD incidence", "vaccine coverage"),each=2))),each=2), c(": low VE",": high VE")) 
+par(mfrow=c(7,2),cex=1.4,las=1,mar=c(5,4,2,1)+0.1)
+for(id in 1:length(sim_result3)){
+  res_dl<-sim_result3[[id]][[1]]
+  res_em<-sim_result3[[id]][[2]]
+  res_pb<-sim_result2[[id]]
+  res_pb$est<-pmin(VE_upp,pmax(0,res_pb$est))
+  res_em$est<-pmin(VE_upp,pmax(0,res_em$est))
+  res_dl$est<-pmin(VE_upp,pmax(0,res_dl$est))
+  trueCI<-quantile(res_dl$true,c(0.025,0.975))
+  xrange<-c(0,1)
+  yrange=c(0,150-50*id%%2)
+  hist(res_dl$est,breaks=c(seq(-1,2,by=0.01)),col=rgb(0,0.75,1,1/4),xlim=xrange,ylim=yrange,main=titles[id],xlab="VE estimate")
+  #polygon(rep(trueCI,each=2),c(yrange,rev(yrange))*1.1,col=rgb(0,0,0,0.01),border=NA)
+  hist(res_pb$est,breaks=c(seq(-1,2,by=0.01)),add=T,col=rgb(0,0,1,1/4),xlim=xrange,ylim=yrange)
+  hist(res_em$est,breaks=c(seq(-1,2,by=0.01)),add=T,col=rgb(1,0.5,0,1/4),xlim=xrange,ylim=yrange)
+  abline(v=res_dl$parm["VE"])
+  abline(v=median(res_dl$est),col=3,lty=2)
+  abline(v=median(res_pb$est),col=4,lty=2)
+  abline(v=median(res_em$est),col=2,lty=2)
+}
+```
+
+## Information loss
+We compare estimates from misclassified data with bias correction by the direct likelihood method with those obtained from the true data (Figure \ref{fig-infoloss-mul}). The results from the misclassified data shows wider confidence intervals (SD 1.1-3.0 times wider) due to the loss of information in the data. The degree of information loss varies between different settings, and it should be carefully considered when one calculates the power of test-negative design studies. Overestimatied test performance may not only underestimate the true VE, but also lead to overconfidence.
+
+```{r sim-mul-var-mainresult, echo=FALSE,fig.width=18,fig.height=12}
+par(mfrow=c(2,2),cex=1.4,las=1,mar=c(5,10,2,1)+0.1)
+esttable<-NA
+for(id in 1:6){
+  res<-sim_result3[[id]]
+  esttable<-cbind(esttable,res[[1]]$true,res[[1]]$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10)+1)],col=c(rgb(0,0,1,1/4),rgb(1,1,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+legend("topright",bty="n",pch=19,col=c(rgb(0.9,0.9,0,1/2),rgb(0,0,1,1/4)),legend=c("true","corrected "))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12)+1)],col=c(rgb(0,0,1,1/4),rgb(1,1,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+  #boxplot(res$raw,breaks=seq(-1,2,by=0.01),add=T,col=rgb(1,0,0,1/4),ylim=xrange)
+  #hist(res$true,breaks=seq(-1,2,by=0.025),add=T,col=rgb(1,1,0,1/4),xlim=xrange,ylim=yrange)
+axis(side=2,at=c(1.5,4.5,7.5),labels=rev(c("Baseline","High quality test","Low quality test")))
+abline(v=0.8)
+
+esttable<-NA
+for(id in 7:14){
+  res<-sim_result3[[id]]
+  esttable<-cbind(esttable,res[[1]]$true,res[[1]]$est)
+}
+bplot(esttable[,rev(c(1,2,0,5,6,0,9,10,0,13,14)+1)],col=c(rgb(0,0,1,1/4),rgb(1,1,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+  
+bplot(esttable[,rev(c(3,4,0,7,8,0,11,12,0,15,16)+1)],col=c(rgb(0,0,1,1/4),rgb(1,1,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+axis(side=2,at=c(1.5,4.5,7.5,10.5),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+abline(v=0.8)
+```
+
+
+## Bias and the number of covariates
+```{r sim-mul-functions4,tidy=TRUE}
+# Simulation & estimation function
+manycov_simulator<-function(parm,seed,ncovset=1){
+  set.seed(seed)
+  VE<-parm["VE"]
+  LR<-parm["LR"]
+  CR<-parm["CR"]
+  sens<-parm["sens"]
+  spec<-parm["spec"]
+  
+  lambda_vac<-(matrix(c((1-VE)*CR,1-CR,CR,1-CR),2,2)%*%c(LR,1-LR))
+  lambda_age<-c((1+pop_age[1]/sum(pop_age)*(RR_age[1]-1))^ncovset*CR ,(1+pop_age[1]/sum(pop_age)*(RR_age[2]-1))^ncovset*(1-CR))#(matrix(c(RR_age[1]*CR,RR_age[2]*(1-CR),CR,1-CR),2,2)%*%pop_age)
+  lambda_ab<-c(exp(log(RR_ab[1])^2/2*ncovset)*CR,exp(log(RR_ab[2])^2/2*ncovset)*(1-CR))
+  lambda_true<-lambda_vac*lambda_age*lambda_ab
+  lambda_true<-lambda_true/sum(lambda_true)*mean_size
+  
+  # Simulation
+  S_true<-rpois(2,lambda_true) # number of TD and ND cases
+  ## Covariate sampling
+  xi_vac_TD<-sample.int(2,S_true[1],replace=T,prob=rev(c(LR,1-LR)*c(1-VE,1)))-1
+  xi_vac_ND<-sample.int(2,S_true[2],replace=T,prob=rev(c(LR,1-LR)))-1
+  xi_age_TD<-sample.int(2,S_true[1]*ncovset,replace=T,prob=rev(pop_age*c(RR_age[1],1)))-1
+  xi_age_ND<-sample.int(2,S_true[2]*ncovset,replace=T,prob=rev(pop_age*c(RR_age[2],1)))-1
+  xi_ab_TD<-rnorm(S_true[1]*ncovset,log(RR_ab[1]),1)
+  xi_ab_ND<-rnorm(S_true[2]*ncovset,log(RR_ab[2]),1)
+  
+  # fake covariates
+  xi_disc_TD<-sample.int(2,S_true[1]*ncovset,replace=T,prob=rev(pop_age*c(RR_age[1],1)))-1
+  xi_disc_ND<-sample.int(2,S_true[1],replace=T,prob=rev(pop_age*c(RR_age[2],1)))-1
+
+  
+  xi_TD<-cbind(vac=xi_vac_TD,age=matrix(xi_age_TD,S_true[1]),ab=matrix(xi_ab_TD,S_true[1]))
+  xi_ND<-cbind(vac=xi_vac_ND,age=matrix(xi_age_ND,S_true[2]),ab=matrix(xi_ab_ND,S_true[2]))
+  
+  lreg_true<-glm(test~.,family=binomial(link="logit"),data=as.data.frame(rbind(cbind(test=1,xi_TD),cbind(test=0,xi_ND))))
+  
+  ## Misclassification
+  sample_pos<-rbinom(2,S_true,c(sens,1-spec)) # number of positives who are with TD / ND
+  D_pos<-rbind(head(xi_TD,sample_pos[1]),head(xi_ND,sample_pos[2]))
+  D_pos<-cbind(test=1,D_pos)
+  D_neg<-rbind(tail(xi_TD,S_true[1]-sample_pos[1]),tail(xi_ND,S_true[2]-sample_pos[2]))
+  D_neg<-cbind(test=0,D_neg)
+  
+  return(list(D_pos=D_pos,D_neg=D_neg,lreg_true=lreg_true))
+}
+```
+
+```{r sim-mul-ncov-implementation,tidy=TRUE}
+# simulation: parametric bootstrap
+sim_result4<-list(nrow(parms)) # store results
+for(id in 1:nrow(parms)){
+  parm<-unlist(parms[id,])
+  sims<-list(0,0,0)
+  for (nc in 1:3){
+    temp<-suppressWarnings(sapply(1:n_sim+id,msim_est,parm=parm,method="dl",ncovs=c(1,3,5)[nc]))
+    sims[[nc]]<-list(true=temp[4,],raw=temp[5,])
+  }
+  names(sims)=paste("ncov",1:3)
+  
+  sim_result4[[id]]=c(sims,list(parm=parm))
+}
+```
+
+```{r sim-mul-mainresult4, echo=FALSE,fig.width=18,fig.height=12}
+par(mfrow=c(2,2),cex=1.4,las=1,mar=c(5,10,2,1)+0.1)
+esttable<-NA
+for(id in 1:6){
+  res<-sim_result4[[id]]
+  esttable<-cbind(esttable,res[[1]]$raw,res[[2]]$raw,res[[3]]$raw)
+}
+bplot(esttable[,rev(c(1,2,3,0,7,8,9,0,13,14,15)+1)],col=c(rgb(0,0,0.5,1/4),rgb(0.5,0,0.5,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n")
+abline(v=0.4)
+axis(side=2,at=c(2,6,10),labels=rev(c("Baseline","High quality test","Low quality test")))
+legend("topright",bty="n",pch=19,col=c(rgb(1,0,0,1/4),rgb(0.5,0,0.5,1/4),rgb(0,0,0.5,1/4)),legend=c("2 covariates","6 covariates","10 covariates "))
+
+bplot(esttable[,rev(c(4,5,6,0,10,11,12,0,16,17,18)+1)],col=c(rgb(0,0,0.5,1/4),rgb(0.5,0,0.5,1/4),rgb(1,0,0,1/4),0),ylim=c(0,1),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5)
+  #boxplot(res$raw,breaks=seq(-1,2,by=0.01),add=T,col=rgb(1,0,0,1/4),ylim=xrange)
+  #hist(res$true,breaks=seq(-1,2,by=0.025),add=T,col=rgb(1,1,0,1/4),xlim=xrange,ylim=yrange)
+axis(side=2,at=c(2,6,10),labels=rev(c("Baseline","High quality test","Low quality test")))
+abline(v=0.8)
+
+esttable<-NA
+for(id in 7:14){
+  res<-sim_result4[[id]]
+  esttable<-cbind(esttable,res[[1]]$raw,res[[2]]$raw,res[[3]]$raw)
+}
+bplot(esttable[,rev(c(1,2,3,0,7,8,9,0,13,14,15,0,19,20,21)+1)],col=c(rgb(0,0,0.5,1/4),rgb(0.5,0,0.5,1/4),rgb(1,0,0,1/4),0),main="Low VE (40%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,boxwex=0.5,yaxt="n",ylim=c(0,1))
+abline(v=0.4)
+axis(side=2,at=c(2,6,10,14),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+  
+bplot(esttable[,rev(c(4,5,6,0,10,11,12,0,16,17,18,0,22,23,24)+1)],col=c(rgb(0,0,0.5,1/4),rgb(0.5,0,0.5,1/4),rgb(1,0,0,1/4),0),main="High VE (80%)",xlab="VE estimate",horizontal=T,notch=F,style="quantile",outline=F,yaxt="n",boxwex=0.5,ylim=c(0,1))
+  #boxplot(res$raw,breaks=seq(-1,2,by=0.01),add=T,col=rgb(1,0,0,1/4),ylim=xrange)
+  #hist(res$true,breaks=seq(-1,2,by=0.025),add=T,col=rgb(1,1,0,1/4),xlim=xrange,ylim=yrange)
+axis(side=2,at=c(2,6,10,14),labels=rev(c("High TD incidence","Low TD incidence","High vaccine coverage","Low vaccine coverage")))
+abline(v=0.8)
+
+  #abline(v=trueCI,col=rgb(0,0,0,0.15))
+```
+
+
