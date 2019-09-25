@@ -1,5 +1,5 @@
 # Bias correction methods for test-negative design in the presence of misclassification
-Methods to correct misclassification bias in test-negative design studies due to imperfect tests. Details of the study including theoretical background and model settings are available on medRxiv.
+Methods to correct misclassification bias in test-negative design studies due to imperfect tests. Details of the study including theoretical background and model settings are available on medRxiv (https://www.medrxiv.org/content/10.1101/19002691v1).
 
 ## Files
 * TND_bias_correction_methods.Rmd/.html
